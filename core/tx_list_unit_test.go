@@ -54,11 +54,11 @@ func newNonSignedDynamicFeeTransaction(nonce uint64, gasTipCap, gasFeeCap int64)
 	})
 }
 
-func newSortedList() *txSortedMap {
-	return newTxSortedMap()
+func newSortedList() *txSortedList {
+	return newTxSortedList()
 }
 
-func populateTransactions(sortedList *txSortedMap, txsCount int, nonceAlignment NonceAlignment) *txSortedMap {
+func populateTransactions(sortedList *txSortedList, txsCount int, nonceAlignment NonceAlignment) *txSortedList {
 	if nonceAlignment == Ascending {
 		// Create transaction in an ascending nonce order
 		for nonce := 0; nonce < txsCount; nonce++ {
@@ -97,12 +97,12 @@ func TestStrictTxListAdd(t *testing.T) {
 		list.Add(txs[v], DefaultTxPoolConfig.PriceBump)
 	}
 	// Verify internal state
-	if len(list.txs.items) != len(txs) {
-		t.Errorf("transaction count mismatch: have %d, want %d", len(list.txs.items), len(txs))
+	if len(*list.txs) != len(txs) {
+		t.Errorf("transaction count mismatch: have %d, want %d", len(*list.txs), len(txs))
 	}
 	for i, tx := range txs {
-		if list.txs.items[tx.Nonce()] != tx {
-			t.Errorf("item %d: transaction mismatch: have %v, want %v", i, list.txs.items[tx.Nonce()], tx)
+		if gottenTx := list.txs.Get(tx.Nonce()); gottenTx != tx {
+			t.Errorf("item %d: transaction mismatch: have %v, want %v", i, gottenTx, tx)
 		}
 	}
 }
@@ -142,7 +142,7 @@ func testTxSortedListPut(t *testing.T, nonceAlignment NonceAlignment) {
 
 func TestSortedListPutSameNonces(t *testing.T) {
 	txsCount := 10
-	sortedList := newTxSortedMap()
+	sortedList := newTxSortedList()
 	for i := 0; i < txsCount; i++ {
 		sortedList.Put(newNonSignedTransaction(5, int64(100000)))
 	}

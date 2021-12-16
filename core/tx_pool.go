@@ -388,11 +388,12 @@ func (pool *TxPool) loop() {
 				}
 				// Any non-locals old enough should be removed
 				if time.Since(pool.beats[addr]) > pool.config.Lifetime {
-					list := pool.queue[addr].Flatten()
-					for _, tx := range list {
-						pool.removeTx(tx.Hash(), true)
+					oldQueuedRemoteTxs := pool.queue[addr].Flatten()
+					// Remove in reverse order, because it is ordered list (thus it's better to remove from the end, than from the beggining)
+					for i := len(oldQueuedRemoteTxs) - 1; i >= 0; i-- {
+						pool.removeTx(oldQueuedRemoteTxs[i].Hash(), true)
 					}
-					queuedEvictionMeter.Mark(int64(len(list)))
+					queuedEvictionMeter.Mark(int64(len(oldQueuedRemoteTxs)))
 				}
 			}
 			pool.mu.Unlock()
@@ -451,8 +452,9 @@ func (pool *TxPool) SetGasPrice(price *big.Int) {
 	if price.Cmp(old) > 0 {
 		// pool.priced is sorted by GasFeeCap, so we have to iterate through pool.all instead
 		drop := pool.all.RemotesBelowTip(price)
-		for _, tx := range drop {
-			pool.removeTx(tx.Hash(), false)
+		drop.SortByNoncesAscending()
+		for i := len(drop) - 1; i >= 0; i-- {
+			pool.removeTx(drop[i].Hash(), false)
 		}
 		pool.priced.Removed(len(drop))
 	}
@@ -572,10 +574,10 @@ func (pool *TxPool) local() map[common.Address]types.Transactions {
 	txs := make(map[common.Address]types.Transactions)
 	for addr := range pool.locals.accounts {
 		if pending := pool.pending[addr]; pending != nil {
-			txs[addr] = append(txs[addr], pending.Flatten()...)
+			txs[addr] = append(txs[addr], *pending.txs...)
 		}
 		if queued := pool.queue[addr]; queued != nil {
-			txs[addr] = append(txs[addr], queued.Flatten()...)
+			txs[addr] = append(txs[addr], *queued.txs...)
 		}
 	}
 	return txs
@@ -963,9 +965,9 @@ func (pool *TxPool) Status(hashes []common.Hash) []TxStatus {
 		}
 		from, _ := types.Sender(pool.signer, tx) // already validated
 		pool.mu.RLock()
-		if txList := pool.pending[from]; txList != nil && txList.txs.items[tx.Nonce()] != nil {
+		if txList := pool.pending[from]; txList != nil && txList.txs.Contains(tx.Nonce()) {
 			status[i] = TxStatusPending
-		} else if txList := pool.queue[from]; txList != nil && txList.txs.items[tx.Nonce()] != nil {
+		} else if txList := pool.queue[from]; txList != nil && txList.txs.Contains(tx.Nonce()) {
 			status[i] = TxStatusQueued
 		}
 		// implicit else: the tx may have been included into a block between
@@ -1078,7 +1080,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 		launchNextRun bool
 		reset         *txpoolResetRequest
 		dirtyAccounts *accountSet
-		queuedEvents  = make(map[common.Address]*txSortedMap)
+		queuedEvents  = make(map[common.Address]*txSortedList)
 	)
 	for {
 		// Launch next background reorg if needed
@@ -1091,7 +1093,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			launchNextRun = false
 
 			reset, dirtyAccounts = nil, nil
-			queuedEvents = make(map[common.Address]*txSortedMap)
+			queuedEvents = make(map[common.Address]*txSortedList)
 		}
 
 		select {
@@ -1120,7 +1122,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 			// request one later if they want the events sent.
 			addr, _ := types.Sender(pool.signer, tx)
 			if _, ok := queuedEvents[addr]; !ok {
-				queuedEvents[addr] = newTxSortedMap()
+				queuedEvents[addr] = newTxSortedList()
 			}
 			queuedEvents[addr].Put(tx)
 
@@ -1139,7 +1141,7 @@ func (pool *TxPool) scheduleReorgLoop() {
 }
 
 // runReorg runs reset and promoteExecutables on behalf of scheduleReorgLoop.
-func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*txSortedMap) {
+func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirtyAccounts *accountSet, events map[common.Address]*txSortedList) {
 	defer func(t0 time.Time) {
 		reorgDurationTimer.Update(time.Since(t0))
 	}(time.Now())
@@ -1203,17 +1205,17 @@ func (pool *TxPool) runReorg(done chan struct{}, reset *txpoolResetRequest, dirt
 	pool.mu.Unlock()
 
 	// Notify subsystems for newly added transactions
-	for _, tx := range promoted {
+	for _, tx := range types.Transactions(promoted).SortByNoncesAscending() {
 		addr, _ := types.Sender(pool.signer, tx)
 		if _, ok := events[addr]; !ok {
-			events[addr] = newTxSortedMap()
+			events[addr] = newTxSortedList()
 		}
 		events[addr].Put(tx)
 	}
 	if len(events) > 0 {
 		var txs []*types.Transaction
 		for _, set := range events {
-			txs = append(txs, set.Flatten()...)
+			txs = append(txs, *set...)
 		}
 		pool.txFeed.Send(NewTxsEvent{txs})
 	}
@@ -1489,21 +1491,21 @@ func (pool *TxPool) truncateQueue() {
 
 		addresses = addresses[:len(addresses)-1]
 
+		sortedTxs := list.Flatten().SortByNoncesAscending()
 		// Drop all transactions if they are less than the overflow
 		if size := uint64(list.Len()); size <= drop {
-			for _, tx := range list.Flatten() {
-				pool.removeTx(tx.Hash(), true)
+			for i := len(sortedTxs) - 1; i >= 0; i-- {
+				pool.removeTx(sortedTxs[i].Hash(), true)
 			}
 			drop -= size
 			queuedRateLimitMeter.Mark(int64(size))
-			continue
-		}
-		// Otherwise drop only last few transactions
-		txs := list.Flatten()
-		for i := len(txs) - 1; i >= 0 && drop > 0; i-- {
-			pool.removeTx(txs[i].Hash(), true)
-			drop--
-			queuedRateLimitMeter.Mark(1)
+		} else {
+			// Otherwise drop only last few transactions
+			for i := len(sortedTxs) - 1; i >= 0 && drop > 0; i-- {
+				pool.removeTx(sortedTxs[i].Hash(), true)
+				drop--
+				queuedRateLimitMeter.Mark(1)
+			}
 		}
 	}
 }
@@ -1548,7 +1550,7 @@ func (pool *TxPool) demoteUnexecutables() {
 			localGauge.Dec(int64(len(olds) + len(drops) + len(invalids)))
 		}
 		// If there's a gap in front, alert (should never happen) and postpone all transactions
-		if list.Len() > 0 && list.txs.Get(nonce) == nil {
+		if list.Len() > 0 && !list.txs.Contains(nonce) {
 			gapped := list.Cap(0)
 			for _, tx := range gapped {
 				hash := tx.Hash()
@@ -1622,8 +1624,10 @@ func (as *accountSet) containsTx(tx *types.Transaction) bool {
 
 // add inserts a new address into the set to track.
 func (as *accountSet) add(addr common.Address) {
+	if as.cache != nil && !as.contains(addr) {
+		*as.cache = append(*as.cache, addr)
+	}
 	as.accounts[addr] = struct{}{}
-	as.cache = nil
 }
 
 // addTx adds the sender of tx into the set.
@@ -1817,7 +1821,7 @@ func (t *txLookup) RemoteToLocals(locals *accountSet) int {
 
 // RemotesBelowTip finds all remote transactions below the given tip threshold.
 func (t *txLookup) RemotesBelowTip(threshold *big.Int) types.Transactions {
-	found := make(types.Transactions, 0, 128)
+	found := make(types.Transactions, 0, len(t.remotes))
 	t.Range(func(hash common.Hash, tx *types.Transaction, local bool) bool {
 		if tx.GasTipCapIntCmp(threshold) < 0 {
 			found = append(found, tx)

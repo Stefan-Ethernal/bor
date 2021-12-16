@@ -22,6 +22,7 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -403,6 +404,14 @@ type Transactions []*Transaction
 
 // Len returns the length of s.
 func (s Transactions) Len() int { return len(s) }
+
+// In place sort by nonces ascending
+func (s Transactions) SortByNoncesAscending() Transactions {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].Nonce() < s[j].Nonce()
+	})
+	return s
+}
 
 // EncodeIndex encodes the i'th transaction to w. Note that this does not check for errors
 // because we assume that *Transaction will only ever contain valid txs that were either

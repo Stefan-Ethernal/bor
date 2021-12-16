@@ -296,6 +296,10 @@ func benchmarkAddRemotesLoadFromFile(b *testing.B, sendersCount, txCountPerSende
 		}
 	}
 
+	for i, j := 0, len(cachedTxs)-1; i < j; i, j = i+1, j-1 {
+		cachedTxs[i], cachedTxs[j] = cachedTxs[j], cachedTxs[i]
+	}
+
 	for _, acc := range uniqueAccounts {
 		pool.currentState.AddBalance(*acc, big.NewInt(10000000))
 	}
@@ -678,7 +682,7 @@ func benchmarkRunReorg(b *testing.B, senderCount int, overflowingTxCountPerAddre
 	}
 
 	dirtyAccounts := newAccountSet(pool.signer, accounts...)
-	queuedEvents := make(map[common.Address]*txSortedMap)
+	queuedEvents := make(map[common.Address]*txSortedList)
 	var reset *txpoolResetRequest = nil
 	pool.AddRemotesSync(pendingTxs)
 
@@ -731,7 +735,7 @@ func benchmarkRunReorgWithReset(b *testing.B, senderCount int, txCountPerAddress
 
 	// Generate a transactions and add them into the pool
 	txs := make([]*types.Transaction, 0, senderCount*txCountPerAddress)
-	queuedEvents := make(map[common.Address]*txSortedMap)
+	queuedEvents := make(map[common.Address]*txSortedList)
 	for i := 0; i < senderCount; i++ {
 		// Generate and seed sender
 		senderKey, senderKeyError := createAndSeedSender(pool, big.NewInt(int64(txCountPerAddress)*int64(txGasLimit)+extraGas))
@@ -741,7 +745,7 @@ func benchmarkRunReorgWithReset(b *testing.B, senderCount int, txCountPerAddress
 
 		senderAccount := crypto.PubkeyToAddress(senderKey.PublicKey)
 		accounts = append(accounts, senderAccount)
-		queuedEvents[senderAccount] = newTxSortedMap()
+		queuedEvents[senderAccount] = newTxSortedList()
 
 		// Create transactions. Each transaction within loop will be generated with same sender key.
 		// We are simulating situation where each sender makes txCountPerAddress transactions.

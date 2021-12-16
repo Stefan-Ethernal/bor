@@ -145,10 +145,11 @@ func validateTxPoolInternals(pool *TxPool) error {
 		return fmt.Errorf("total priced transaction count %d != %d", priced, remote)
 	}
 	// Ensure the next nonce to assign is the correct one
-	for addr, txs := range pool.pending {
+	for addr, pendingTxs := range pool.pending {
 		// Find the last transaction
 		var last uint64
-		for nonce := range txs.txs.items {
+		for _, tx := range *pendingTxs.txs {
+			nonce := tx.Nonce()
 			if last < nonce {
 				last = nonce
 			}
@@ -345,7 +346,7 @@ func TestTransactionQueue(t *testing.T) {
 	pool.enqueueTx(tx.Hash(), tx, false, true)
 
 	<-pool.requestPromoteExecutables(newAccountSet(pool.signer, from))
-	if _, ok := pool.pending[from].txs.items[tx.Nonce()]; ok {
+	if tx := pool.pending[from].txs.Get(tx.Nonce()); tx != nil {
 		t.Error("expected transaction to be in tx pool")
 	}
 	if len(pool.queue) > 0 {
@@ -487,7 +488,8 @@ func TestTransactionDoubleNonce(t *testing.T) {
 	if pool.pending[addr].Len() != 1 {
 		t.Error("expected 1 pending transactions, got", pool.pending[addr].Len())
 	}
-	if tx := pool.pending[addr].txs.items[0]; tx.Hash() != tx2.Hash() {
+	pendingTxs := *pool.pending[addr].txs
+	if tx := pendingTxs[0]; tx.Hash() != tx2.Hash() {
 		t.Errorf("transaction mismatch: have %x, want %x", tx.Hash(), tx2.Hash())
 	}
 
@@ -497,7 +499,8 @@ func TestTransactionDoubleNonce(t *testing.T) {
 	if pool.pending[addr].Len() != 1 {
 		t.Error("expected 1 pending transactions, got", pool.pending[addr].Len())
 	}
-	if tx := pool.pending[addr].txs.items[0]; tx.Hash() != tx2.Hash() {
+	pendingTxs = *pool.pending[addr].txs
+	if tx := pendingTxs[0]; tx.Hash() != tx2.Hash() {
 		t.Errorf("transaction mismatch: have %x, want %x", tx.Hash(), tx2.Hash())
 	}
 	// Ensure the total transaction count is correct
@@ -614,22 +617,22 @@ func TestTransactionDropping(t *testing.T) {
 	testAddBalance(pool, account, big.NewInt(-650))
 	<-pool.requestReset(nil, nil)
 
-	if _, ok := pool.pending[account].txs.items[tx0.Nonce()]; !ok {
+	if !pool.pending[account].txs.Contains(tx0.Nonce()) {
 		t.Errorf("funded pending transaction missing: %v", tx0)
 	}
-	if _, ok := pool.pending[account].txs.items[tx1.Nonce()]; !ok {
+	if !pool.pending[account].txs.Contains(tx1.Nonce()) {
 		t.Errorf("funded pending transaction missing: %v", tx0)
 	}
-	if _, ok := pool.pending[account].txs.items[tx2.Nonce()]; ok {
+	if pool.pending[account].txs.Contains(tx2.Nonce()) {
 		t.Errorf("out-of-fund pending transaction present: %v", tx1)
 	}
-	if _, ok := pool.queue[account].txs.items[tx10.Nonce()]; !ok {
+	if !pool.queue[account].txs.Contains(tx10.Nonce()) {
 		t.Errorf("funded queued transaction missing: %v", tx10)
 	}
-	if _, ok := pool.queue[account].txs.items[tx11.Nonce()]; !ok {
+	if !pool.queue[account].txs.Contains(tx11.Nonce()) {
 		t.Errorf("funded queued transaction missing: %v", tx10)
 	}
-	if _, ok := pool.queue[account].txs.items[tx12.Nonce()]; ok {
+	if pool.queue[account].txs.Contains(tx12.Nonce()) {
 		t.Errorf("out-of-fund queued transaction present: %v", tx11)
 	}
 	if pool.all.Count() != 4 {
@@ -639,16 +642,16 @@ func TestTransactionDropping(t *testing.T) {
 	atomic.StoreUint64(&pool.chain.(*testBlockChain).gasLimit, 100)
 	<-pool.requestReset(nil, nil)
 
-	if _, ok := pool.pending[account].txs.items[tx0.Nonce()]; !ok {
+	if !pool.pending[account].txs.Contains(tx0.Nonce()) {
 		t.Errorf("funded pending transaction missing: %v", tx0)
 	}
-	if _, ok := pool.pending[account].txs.items[tx1.Nonce()]; ok {
+	if pool.pending[account].txs.Contains(tx1.Nonce()) {
 		t.Errorf("over-gased pending transaction present: %v", tx1)
 	}
-	if _, ok := pool.queue[account].txs.items[tx10.Nonce()]; !ok {
+	if !pool.queue[account].txs.Contains(tx10.Nonce()) {
 		t.Errorf("funded queued transaction missing: %v", tx10)
 	}
-	if _, ok := pool.queue[account].txs.items[tx11.Nonce()]; ok {
+	if pool.queue[account].txs.Contains(tx11.Nonce()) {
 		t.Errorf("over-gased queued transaction present: %v", tx11)
 	}
 	if pool.all.Count() != 2 {
@@ -726,25 +729,25 @@ func TestTransactionPostponing(t *testing.T) {
 
 	// The first account's first transaction remains valid, check that subsequent
 	// ones are either filtered out, or queued up for later.
-	if _, ok := pool.pending[accs[0]].txs.items[txs[0].Nonce()]; !ok {
+	if !pool.pending[accs[0]].txs.Contains(txs[0].Nonce()) {
 		t.Errorf("tx %d: valid and funded transaction missing from pending pool: %v", 0, txs[0])
 	}
-	if _, ok := pool.queue[accs[0]].txs.items[txs[0].Nonce()]; ok {
+	if pool.queue[accs[0]].txs.Contains(txs[0].Nonce()) {
 		t.Errorf("tx %d: valid and funded transaction present in future queue: %v", 0, txs[0])
 	}
 	for i, tx := range txs[1:100] {
 		if i%2 == 1 {
-			if _, ok := pool.pending[accs[0]].txs.items[tx.Nonce()]; ok {
+			if pool.pending[accs[0]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: valid but future transaction present in pending pool: %v", i+1, tx)
 			}
-			if _, ok := pool.queue[accs[0]].txs.items[tx.Nonce()]; !ok {
+			if !pool.queue[accs[0]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: valid but future transaction missing from future queue: %v", i+1, tx)
 			}
 		} else {
-			if _, ok := pool.pending[accs[0]].txs.items[tx.Nonce()]; ok {
+			if pool.pending[accs[0]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: out-of-fund transaction present in pending pool: %v", i+1, tx)
 			}
-			if _, ok := pool.queue[accs[0]].txs.items[tx.Nonce()]; ok {
+			if pool.queue[accs[0]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: out-of-fund transaction present in future queue: %v", i+1, tx)
 			}
 		}
@@ -756,11 +759,11 @@ func TestTransactionPostponing(t *testing.T) {
 	}
 	for i, tx := range txs[100:] {
 		if i%2 == 1 {
-			if _, ok := pool.queue[accs[1]].txs.items[tx.Nonce()]; !ok {
+			if !pool.queue[accs[1]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: valid but future transaction missing from future queue: %v", 100+i, tx)
 			}
 		} else {
-			if _, ok := pool.queue[accs[1]].txs.items[tx.Nonce()]; ok {
+			if pool.queue[accs[1]].txs.Contains(tx.Nonce()) {
 				t.Errorf("tx %d: out-of-fund transaction present in future queue: %v", 100+i, tx)
 			}
 		}
@@ -2484,6 +2487,66 @@ func TestHighPricedPendingDynamicFeeTransactions(t *testing.T) {
 	for i := 0; i < highPricedTxsCount; i++ {
 		key, _ := createAndSeedSender(pool, big.NewInt(10000000))
 		txs = append(txs, dynamicFeeTx(0, 22000, big.NewInt(30), big.NewInt(1), key))
+	}
+	addTxsWithErrorsHandling(txs)
+	checkTxsCount(8, 1)
+
+	if err := validateTxPoolInternals(pool); err != nil {
+		t.Fatalf("Pool is in invalid state. Error %v", err)
+	}
+}
+
+func TestHighPricedPendingLegacyTransactions(t *testing.T) {
+	t.Parallel()
+
+	config := testTxPoolConfig
+	config.GlobalSlots = 9
+	config.GlobalQueue = 1
+
+	statedb, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	blockchain := &testBlockChain{1000000, statedb, new(event.Feed)}
+
+	pool := NewTxPool(config, params.TestChainConfig, blockchain)
+	defer pool.Stop()
+
+	addTxsWithErrorsHandling := func(txs []*types.Transaction) {
+		for i, err := range pool.AddRemotesSync(txs) {
+			if err != nil {
+				t.Fatalf("tx #%d: failed to add transactions: %v", i, err)
+			}
+		}
+	}
+
+	checkTxsCount := func(expectedPending, expectedQueued int) {
+		pending, queued := pool.Stats()
+		if pending != expectedPending {
+			t.Errorf("Expected %d pending transactions, but got %d", expectedPending, pending)
+		}
+		if queued != expectedQueued {
+			t.Errorf("Expected %d queued transactions, but got %d", expectedQueued, queued)
+		}
+	}
+
+	initialTxsCount := 5
+	key, _ := createAndSeedSender(pool, big.NewInt(10000000))
+	txs := make([]*types.Transaction, 0, initialTxsCount)
+	for i := 0; i < initialTxsCount; i++ {
+		txs = append(txs, pricedTransaction(uint64(i), 22000, big.NewInt(10), key))
+	}
+	addTxsWithErrorsHandling(txs)
+	checkTxsCount(initialTxsCount, 0)
+
+	lowPricedTx := pricedTransaction(uint64(initialTxsCount), 22000, big.NewInt(5), key)
+	highPricedTx1 := pricedTransaction(uint64(initialTxsCount+1), 22000, big.NewInt(15), key)
+	highPricedTx2 := pricedTransaction(uint64(initialTxsCount+2), 22000, big.NewInt(15), key)
+	addTxsWithErrorsHandling([]*types.Transaction{lowPricedTx, highPricedTx1, highPricedTx2})
+	checkTxsCount(initialTxsCount+3, 0)
+
+	highPricedTxsCount := 4
+	txs = make([]*types.Transaction, 0, highPricedTxsCount)
+	for i := 0; i < highPricedTxsCount; i++ {
+		key, _ := createAndSeedSender(pool, big.NewInt(10000000))
+		txs = append(txs, pricedTransaction(0, 22000, big.NewInt(30), key))
 	}
 	addTxsWithErrorsHandling(txs)
 	checkTxsCount(8, 1)
