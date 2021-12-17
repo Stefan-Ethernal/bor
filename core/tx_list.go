@@ -61,19 +61,18 @@ func (m *txSortedList) Put(tx *types.Transaction) {
 	} else if insertIndex == len(*m) {
 		*m = append(*m, tx)
 	} else {
-		*m = append((*m)[:insertIndex+1], (*m)[insertIndex:]...) // index < len(a)
+		// index < len(a)
+		*m = append((*m)[:insertIndex+1], (*m)[insertIndex:]...)
 		(*m)[insertIndex] = tx
 	}
 }
 
-// Forward removes all transactions from the sorted list with a nonce lower than the
-// provided threshold. Every removed transaction is returned for any post-removal
-// maintenance.
-func (m *txSortedList) Forward(threshold uint64) types.Transactions {
-	var removed types.Transactions
-	_, index, _ := m.FindIndex(threshold)
-	removed = types.Transactions((*m)[0 : index+1])
-	*m = (*m)[index+1 : len(*m)]
+// Forward removes all transactions from the sorted list with a nonce lower than the provided threshold.
+// Every removed transaction is returned for any post-removal maintenance.
+func (m *txSortedList) Forward(nonceThreshold uint64) types.Transactions {
+	_, lowerNonceIndex, _ := m.FindIndex(nonceThreshold)
+	removed := types.Transactions((*m)[0 : lowerNonceIndex+1])
+	*m = (*m)[lowerNonceIndex+1 : len(*m)]
 	return removed
 }
 
@@ -109,17 +108,20 @@ func (m *txSortedList) Cap(threshold int) types.Transactions {
 	return drops
 }
 
-// Binary search through txSortedList and find position of transaction with nonce, index of first lower nonce
-// and position where should new transaction with nonce = nonce insertred
-func (m *txSortedList) FindIndex(nonce uint64) (int, int, int) {
-	low, high, index, beforeNonceIndex, insertIndex := 0, len(*m)-1, -1, -1, len(*m)
+// Binary search through txSortedList and find:
+// - position of transaction with nonce,
+// - position of first lower nonce and
+// - position where new transaction with given nonce should be inserted.
+func (m *txSortedList) FindIndex(nonce uint64) (index int, leftIndex int, rightIndex int) {
+	low, high := 0, len(*m)-1
+	index, leftIndex, rightIndex = -1, -1, len(*m)
 	for low <= high {
 		median := low + (high-low)>>1
 		if (*m)[median].Nonce() < nonce {
-			beforeNonceIndex = median
+			leftIndex = median
 			low = median + 1
 		} else {
-			insertIndex = median
+			rightIndex = median
 			high = median - 1
 		}
 	}
@@ -128,7 +130,7 @@ func (m *txSortedList) FindIndex(nonce uint64) (int, int, int) {
 		index = low
 	}
 
-	return index, beforeNonceIndex, insertIndex
+	return index, leftIndex, rightIndex
 }
 
 // Remove deletes a transaction, returning whether the transaction was found.
@@ -181,8 +183,7 @@ func (m *txSortedList) Flatten() types.Transactions {
 // LastElement returns the last element of a flattened list, thus, the
 // transaction with the highest nonce
 func (m *txSortedList) LastElement() *types.Transaction {
-	el := (*m)[len(*m)-1]
-	return el
+	return (*m)[len(*m)-1]
 }
 
 // txList is a "list" of transactions belonging to an account, sorted by account
@@ -517,7 +518,8 @@ func (l *txPricedList) Discard(slots int, force bool) (types.Transactions, bool)
 	// If we still can't make enough room for the new transaction
 	if slots > 0 && !force {
 		for _, tx := range drop {
-			// FIXME: Bug? Always pushing to the urgent, although it is retrieved from floating heap and transaction could be originating either from urgent or floating.
+			// FIXME: Bug? Always pushing to the urgent, although it is retrieved from floating heap whereas the transaction could be originating either from urgent or floating.
+			// We should be tracking where transaction originated from (urgent or floating) and revert it to appropriate heap.
 			heap.Push(&l.urgent, tx)
 		}
 		return nil, false
@@ -543,7 +545,9 @@ func (l *txPricedList) Reheap() {
 	// Note: Discard would also do this before the first eviction but Reheap can do
 	// is more efficiently. Also, Underpriced would work suboptimally the first time
 	// if the floating queue was empty.
-	// FIXME: Floating heap must be kept at 25% of urgent heap size? This way it is only 20% of urgent heap size.
+
+	// FIXME: Floating heap must be kept at least 25% of urgent heap size (see Discard function)?
+	// This way it is only 20% of urgent heap size.
 	floatingCount := len(l.urgent.list) * floatingRatio / (urgentRatio + floatingRatio)
 	l.floating.list = make([]*types.Transaction, floatingCount)
 	for i := 0; i < floatingCount; i++ {

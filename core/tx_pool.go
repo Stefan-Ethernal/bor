@@ -1585,7 +1585,7 @@ func (a addressesByHeartbeat) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 // accountSet is simply a set of addresses to check for existence, and a signer
 // capable of deriving addresses from transactions.
 type accountSet struct {
-	accounts map[common.Address]struct{}
+	accounts map[common.Address]bool
 	signer   types.Signer
 	cache    *[]common.Address
 }
@@ -1594,7 +1594,7 @@ type accountSet struct {
 // derivations.
 func newAccountSet(signer types.Signer, addrs ...common.Address) *accountSet {
 	as := &accountSet{
-		accounts: make(map[common.Address]struct{}),
+		accounts: make(map[common.Address]bool),
 		signer:   signer,
 	}
 	for _, addr := range addrs {
@@ -1605,8 +1605,7 @@ func newAccountSet(signer types.Signer, addrs ...common.Address) *accountSet {
 
 // contains checks if a given address is contained within the set.
 func (as *accountSet) contains(addr common.Address) bool {
-	_, exist := as.accounts[addr]
-	return exist
+	return as.accounts[addr]
 }
 
 func (as *accountSet) empty() bool {
@@ -1627,7 +1626,7 @@ func (as *accountSet) add(addr common.Address) {
 	if as.cache != nil && !as.contains(addr) {
 		*as.cache = append(*as.cache, addr)
 	}
-	as.accounts[addr] = struct{}{}
+	as.accounts[addr] = true
 }
 
 // addTx adds the sender of tx into the set.
@@ -1653,7 +1652,7 @@ func (as *accountSet) flatten() []common.Address {
 // merge adds all addresses from the 'other' set into 'as'.
 func (as *accountSet) merge(other *accountSet) {
 	for addr := range other.accounts {
-		as.accounts[addr] = struct{}{}
+		as.accounts[addr] = true
 	}
 	as.cache = nil
 }
@@ -1802,18 +1801,18 @@ func (t *txLookup) Remove(hash common.Hash) {
 	delete(t.remotes, hash)
 }
 
-// RemoteToLocals migrates the transactions belongs to the given locals to locals
-// set. The assumption is held the locals set is thread-safe to be used.
+// RemoteToLocals migrates the transactions belongs to the given remotes to locals set.
+// The assumption is held the locals set is thread-safe to be used.
 func (t *txLookup) RemoteToLocals(locals *accountSet) int {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	var migrated int
+	migrated := 0
 	for hash, tx := range t.remotes {
 		if locals.containsTx(tx) {
 			t.locals[hash] = tx
 			delete(t.remotes, hash)
-			migrated += 1
+			migrated++
 		}
 	}
 	return migrated
